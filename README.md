@@ -28,7 +28,7 @@ skills/redis-admin-dashboard/
 | Skill | What you get | Best for |
 |-------|--------------|----------|
 | **[dashboard-foundations](skills/dashboard-foundations)** | Shared design system: shadcn/ui setup, Tailwind tokens, responsive 12-col grid, loading/empty/error states, accessibility. | The base every dashboard builds on. Install this first. |
-| **[redis-admin-dashboard](skills/redis-admin-dashboard)** | Redis key-management admin: KPI cards, namespace table, key-type donut, TTL ranges, activity log, memory consumers, scan/get/delete actions. | Infra & ops monitoring / admin tooling. |
+| **[redis-admin-dashboard](skills/redis-admin-dashboard)** | Redis key-management admin: server-health banner + vitals (memory, fragmentation, hit rate, evictions, persistence, replication) with warnings & debug hints, KPI cards, namespace table, key-type donut, TTL ranges, activity log, memory consumers, scan/get/delete actions. | Infra & ops monitoring / admin tooling. |
 | **[saas-analytics-dashboard](skills/saas-analytics-dashboard)** | Product/marketing analytics: trend KPIs with deltas, time-series area charts, funnel, cohort/retention, top-N tables, date-range filtering. | Growth, product, and revenue analytics. |
 | **[admin-crud-dashboard](skills/admin-crud-dashboard)** | Data-management admin: server-style data tables, faceted filters, search, pagination, row actions, create/edit forms with validation, bulk actions. | Internal tools & back-office CRUD. |
 

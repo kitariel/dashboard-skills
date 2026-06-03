@@ -8,8 +8,9 @@ Exact responsive structure with Tailwind classes. Page background light gray, co
 <div className="min-h-screen bg-muted/40">
   <div className="mx-auto max-w-screen-2xl space-y-6 p-4 md:p-6">
     <Header />
+    <ServerHealthBanner />   {/* immediately visible: status + warnings */}
     <KpiRow />
-    <MainGrid />
+    <MainGrid />             {/* ServerVitalsCard lives in the right column */}
     <BottomGrid />
   </div>
 </div>
@@ -45,6 +46,14 @@ Auto-refresh `Select` options: `off | 10 | 30 | 60` (seconds). Render the timest
 
 Breakpoints: 1 col (mobile) → 2 (`sm`) → 3 (`lg`) → 5 (`xl`). When loading, render 5 skeleton stat cards.
 
+## 2b. Server Health banner (between header and KPIs)
+
+```tsx
+<ServerHealthBanner health={health} loading={loading} onViewDetails={() => setIssuesOpen(true)} />
+```
+
+Full-width `Alert` colored by `health.status` (ok → slim neutral/emerald line; warning → amber; critical → destructive). Shows the status title + count, `v{version} · {role} · uptime`, and a "View details" button that opens the `HealthIssuesList` in a `Sheet`. This is the first thing an operator should notice when something's wrong.
+
 ## 3. Main grid — 8 / 4 split
 
 ```tsx
@@ -53,6 +62,7 @@ Breakpoints: 1 col (mobile) → 2 (`sm`) → 3 (`lg`) → 5 (`xl`). When loading
     <NamespacesTable ... />
   </div>
   <div className="space-y-6 lg:col-span-4">
+    <ServerVitalsCard ... />   {/* specs: memory, fragmentation, hit rate, persistence... */}
     <KeyTypesChart ... />
     <TtlRangeCard ... />
     <QuickActionsCard ... />
@@ -76,6 +86,7 @@ On mobile the right column stacks below the table (single column).
 
 - **Delete confirm** — `AlertDialog`: title "Delete keys?", shows the target prefix/pattern, destructive confirm button. Used by row delete, Quick Actions "Delete Keys", and maintenance toggle (its own confirm).
 - **Inspect / Scan / Get** — `Sheet` (right side) or `Dialog`: header = key/prefix, body = type, TTL, memory, value preview, and (for scan) a prefix input + matched count + sample list. Placeholder content in mock mode.
+- **Health issues** — `Sheet` opened from the health banner's "View details": renders `HealthIssuesList` (each issue's title, detail, metric, and remediation/debug step). State: `issuesOpen`.
 
 ## Loading strategy
 

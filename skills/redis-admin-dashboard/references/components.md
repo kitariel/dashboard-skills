@@ -1,6 +1,6 @@
 # Redis Admin Dashboard — Component Contracts
 
-Eight reusable, typed components. Keep markup DRY — share `StatCard` and a `SectionCard` wrapper. All live under `components/redis/`. Each receives data + handlers via props (no data fetching inside leaf components except where noted).
+Reusable, typed components (8 core + 3 health). Keep markup DRY — share `StatCard` and a `SectionCard` wrapper. All live under `components/redis/`. Each receives data + handlers via props (no data fetching inside leaf components except where noted). Components 9–11 cover server health/specs so operators see problems and how to debug them.
 
 ## Prefix badge color map
 
@@ -91,6 +91,55 @@ interface ImportantNotesCardProps { notes?: string[]; }
   - "Deleting by pattern is irreversible — scan first to preview matches."
   - "`maintenance_mode` toggles read-only behavior across services."
   - "Keys without a TTL never expire and can grow memory unbounded."
+
+## 9. `ServerHealthBanner` (the at-a-glance "is Redis OK?" strip)
+
+Sits directly under the header so an operator sees trouble immediately.
+
+```ts
+interface ServerHealthBannerProps {
+  health: RedisServerHealth;
+  loading?: boolean;
+  onViewDetails?: () => void; // opens the issues sheet/dialog
+}
+```
+- Render as an `Alert` whose tone follows `health.status`:
+  - `ok` → neutral/emerald, icon `ShieldCheck`, title "All systems healthy".
+  - `warning` → amber, icon `TriggerAlert`/`AlertTriangle`, title "N warnings".
+  - `critical` → destructive/rose, icon `OctagonAlert`/`AlertOctagon`, title "Action needed: N critical".
+- Right side: small meta (`v{version} · {role} · up {uptime}`) + a "View details" `Button` (opens issue list). When `ok`, collapse to a slim single-line bar.
+- `loading` → `Skeleton` the height of the banner.
+
+Severity → classes (reuse everywhere):
+```ts
+const SEV = {
+  ok:       { text: "text-emerald-600", bg: "bg-emerald-500/10", dot: "bg-emerald-500", badge: "bg-emerald-500/10 text-emerald-600" },
+  warning:  { text: "text-amber-600",   bg: "bg-amber-500/10",   dot: "bg-amber-500",   badge: "bg-amber-500/10 text-amber-600" },
+  critical: { text: "text-rose-600",    bg: "bg-rose-500/10",    dot: "bg-rose-500",    badge: "bg-rose-500/10 text-rose-600" },
+} as const;
+```
+
+## 10. `ServerVitalsCard` (the specs grid: RAM, fragmentation, hit rate…)
+
+```ts
+interface ServerVitalsCardProps { health: RedisServerHealth; loading?: boolean; }
+```
+- `SectionCard` titled "Server Health" with the overall status `Badge` in the header `action` slot.
+- Body = responsive grid (`grid-cols-2 md:grid-cols-3`) of vital tiles, one per `health.vitals[]`:
+  - small label, big `display` value (`tabular-nums`), a colored status `dot` per `SEV[v.severity]`.
+  - if `v.severity !== "ok"`, wrap the tile in a `Tooltip` showing `v.hint` and tint the tile `SEV[v.severity].bg` (subtle).
+- Memory tile may include a thin `Progress` (used/max %). Keep it scannable — color only on non-ok tiles.
+
+## 11. `HealthIssuesList` (what's wrong + how to debug it)
+
+```ts
+interface HealthIssuesListProps { issues: RedisHealthIssue[]; }
+```
+- Rendered inside the "View details" `Sheet`/`Dialog` opened from the banner (and optionally inline when critical).
+- One block per issue, sorted critical-first: severity `Badge` + `title`, muted `detail`, optional `metric` in `font-mono text-xs`, and a highlighted **Remediation** line (icon `Wrench`/`Terminal`) with `remediation` — render command-like text in `font-mono`.
+- Empty (`issues.length === 0`) → emerald "No active issues" empty state.
+
+> These three pull from `getServerHealth()`. Severity is computed in `lib/redis/health.ts` from raw `INFO` values — components only render the already-evaluated `severity`/`status`.
 
 ## Shared `SectionCard`
 ```tsx

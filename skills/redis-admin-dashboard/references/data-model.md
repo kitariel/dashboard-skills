@@ -60,6 +60,78 @@ export interface RedisMemoryConsumer {
   memoryBytes: number;
   keys: number;
 }
+
+// ---- Server health / vitals (the "is Redis OK?" model) ------------------
+export type HealthSeverity = "ok" | "warning" | "critical";
+
+// A single monitored metric, evaluated against thresholds at read time.
+export interface RedisVital {
+  id: string;
+  label: string;            // "Memory used", "Fragmentation", "Hit rate"...
+  value: number;            // raw numeric value for comparisons/sorting
+  display: string;          // human-formatted ("182 MB / 256 MB", "94.2%")
+  severity: HealthSeverity; // computed from thresholds (see format.ts/evaluate)
+  hint?: string;            // short debug guidance shown when not "ok"
+}
+
+// A surfaced problem with a remediation/debug step.
+export interface RedisHealthIssue {
+  id: string;
+  severity: "warning" | "critical";
+  title: string;            // "Memory above 90% of maxmemory"
+  detail: string;           // what's happening, plain language
+  metric?: string;          // related value, e.g. "RSS 1.9× used"
+  remediation: string;      // how to debug/fix (often a command to run)
+}
+
+export interface RedisServerHealth {
+  status: HealthSeverity;   // overall = worst severity among issues/vitals
+  version: string;          // e.g. "7.2.4"
+  role: "master" | "replica";
+  uptimeSeconds: number;
+  vitals: RedisVital[];
+  issues: RedisHealthIssue[];
+}
+```
+
+### Thresholds & evaluation (the rules that turn raw INFO into severity)
+
+These map directly to fields from Redis `INFO`. Keep them in `lib/redis/health.ts`:
+
+| Vital | Source (`INFO` field) | warning | critical | debug hint |
+|-------|-----------------------|---------|----------|------------|
+| Memory used % | `used_memory` / `maxmemory` | > 75% | > 90% | `MEMORY DOCTOR`; review `maxmemory-policy`; find big keys (Top Memory Consumers) |
+| Fragmentation ratio | `mem_fragmentation_ratio` | > 1.5 | > 2.0 **or** < 1.0 | >1.5 = fragmented (consider `activedefrag`); <1.0 = swapping to disk, add RAM |
+| Hit rate | `keyspace_hits/(hits+misses)` | < 90% | < 80% | Low ratio → check TTLs / key design / cache warmup |
+| Evicted keys | `evicted_keys` (rate) | > 0/min | rising fast | Hitting `maxmemory`; raise memory or tune eviction policy |
+| Blocked clients | `blocked_clients` | > 0 | sustained | Inspect `CLIENT LIST`; long `BLPOP`/`WAIT`? |
+| Rejected connections | `rejected_connections` | — | > 0 | Past `maxclients`; raise it / fix connection leaks |
+| Connected clients | `connected_clients` / `maxclients` | > 80% | > 95% | Pool/leak check via `CLIENT LIST` |
+| Persistence (RDB) | `rdb_last_bgsave_status`, `rdb_changes_since_last_save` | stale + many changes | `err` | `BGSAVE`; check disk space / `LASTSAVE` |
+| Persistence (AOF) | `aof_enabled`, `aof_last_bgrewrite_status`, `aof_last_write_status` | — | `err` | Check disk; `BGREWRITEAOF`; review logs |
+| Replication | `master_link_status` (replica) | `connecting` | `down` | Network/auth; check master `INFO replication` |
+| Slowlog | `SLOWLOG LEN` | growing | large | `SLOWLOG GET 10`; optimize slow commands |
+
+Overall `status` = the worst severity across all vitals/issues. A small pure helper:
+
+```ts
+export function evaluateMemory(usedPct: number): HealthSeverity {
+  if (usedPct > 90) return "critical";
+  if (usedPct > 75) return "warning";
+  return "ok";
+}
+export function evaluateFragmentation(ratio: number): HealthSeverity {
+  if (ratio > 2 || ratio < 1) return "critical";
+  if (ratio > 1.5) return "warning";
+  return "ok";
+}
+export function evaluateHitRate(pct: number): HealthSeverity {
+  if (pct < 80) return "critical";
+  if (pct < 90) return "warning";
+  return "ok";
+}
+export const worst = (s: HealthSeverity[]): HealthSeverity =>
+  s.includes("critical") ? "critical" : s.includes("warning") ? "warning" : "ok";
 ```
 
 ## `lib/redis/mock.ts`
@@ -69,7 +141,7 @@ Realistic, internally consistent sample. Keep `totalKeys` equal to the sum of na
 ```ts
 import type {
   RedisOverviewStats, RedisNamespace, RedisKeyTypeSummary,
-  RedisTtlRange, RedisActivity, RedisMemoryConsumer,
+  RedisTtlRange, RedisActivity, RedisMemoryConsumer, RedisServerHealth,
 } from "./types";
 
 export const mockNamespaces: RedisNamespace[] = [
@@ -130,6 +202,50 @@ export const mockMemoryConsumers: RedisMemoryConsumer[] = [
   { keyOrPrefix: "entity-last-paths:*",       type: "string", memoryBytes: 6_200_000,  keys: 5120  },
   { keyOrPrefix: "logged-in-session-token-*", type: "string", memoryBytes: 5_400_000,  keys: 2980  },
 ].sort((a, b) => b.memoryBytes - a.memoryBytes);
+
+// Server health — deliberately seeded with one warning + one critical so the
+// UI shows the "Redis has a problem, here's how to debug it" state by default.
+export const mockServerHealth: RedisServerHealth = {
+  status: "critical", // = worst of the issues below
+  version: "7.2.4",
+  role: "master",
+  uptimeSeconds: 1_904_400, // ~22 days
+  vitals: [
+    { id: "mem",   label: "Memory used",    value: 71.1, display: "182 MB / 256 MB", severity: "ok",       hint: undefined },
+    { id: "frag",  label: "Fragmentation",  value: 2.1,  display: "2.10×",            severity: "critical", hint: "RSS far exceeds used — possible swapping. Check `MEMORY DOCTOR` / add RAM." },
+    { id: "hit",   label: "Hit rate",       value: 87.4, display: "87.4%",            severity: "warning",  hint: "Below 90% — review TTLs and cache warmup." },
+    { id: "ops",   label: "Ops / sec",      value: 12480,display: "12.5k",            severity: "ok" },
+    { id: "evict", label: "Evicted keys",   value: 0,    display: "0",                severity: "ok" },
+    { id: "cli",   label: "Clients",        value: 64,   display: "64 / 10000",       severity: "ok" },
+    { id: "block", label: "Blocked clients",value: 0,    display: "0",                severity: "ok" },
+    { id: "rdb",   label: "Last RDB save",  value: 8400, display: "2h 20m ago",       severity: "warning",  hint: "1.2M changes since last save — run `BGSAVE`." },
+    { id: "aof",   label: "AOF status",     value: 1,    display: "OK",               severity: "ok" },
+    { id: "repl",  label: "Replication",    value: 1,    display: "1 replica · linked",severity: "ok" },
+  ],
+  issues: [
+    {
+      id: "i1", severity: "critical",
+      title: "Memory fragmentation ratio is 2.10×",
+      detail: "Resident memory (RSS) is more than double the used memory. This usually means fragmentation or that Redis is swapping to disk, which causes severe latency.",
+      metric: "mem_fragmentation_ratio = 2.10",
+      remediation: "Run `MEMORY DOCTOR`. Enable `activedefrag yes`, or restart during a maintenance window. If RSS < used (ratio < 1) instead, the OS is swapping — add RAM.",
+    },
+    {
+      id: "i2", severity: "warning",
+      title: "Cache hit rate dropped to 87.4%",
+      detail: "More requests are missing the cache than usual, increasing load on the backing store.",
+      metric: "keyspace_hits / (hits + misses) = 87.4%",
+      remediation: "Inspect short-TTL namespaces (debounce:*, unauth-code:*). Confirm cache warmup and that hot keys aren't being evicted.",
+    },
+    {
+      id: "i3", severity: "warning",
+      title: "1.2M changes since last RDB save (2h 20m ago)",
+      detail: "A crash now would lose a large window of writes.",
+      metric: "rdb_changes_since_last_save = 1,204,300",
+      remediation: "Run `BGSAVE`, verify disk space, and check the snapshot schedule (`save` directives).",
+    },
+  ],
+};
 ```
 
 ## `lib/redis/api.ts` (mock now, fetch later)
@@ -147,6 +263,7 @@ export async function getKeyTypes()         { await delay(); return mock.mockKey
 export async function getTtlRanges()         { await delay(); return mock.mockTtlRanges; }
 export async function getActivity()          { await delay(); return mock.mockActivity; }
 export async function getMemoryConsumers()   { await delay(); return mock.mockMemoryConsumers; }
+export async function getServerHealth()      { await delay(); return mock.mockServerHealth; } // GET /api/redis/health (from INFO)
 
 // Action placeholders — swap for fetch() to /api/redis/* later.
 export async function scanKeys(prefix: string)  { await delay(); return { prefix, matched: 0, sample: [] as string[] }; }
